@@ -1,0 +1,417 @@
+---
+title: "The 2016 Election: A Linear Regression Analysis"
+author: "Derek Williams (dwill24), Becca Lynch (ralynch4), Reshma Sathe (rvsathe2)"
+date: "7/20/2019"
+output:
+  html_document: 
+    toc: yes
+  pdf_document: default
+urlcolor: cyan
+---
+
+***
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+options(scipen = 1, digits = 4, width = 80, fig.align = "center")
+```
+
+## Introduction
+
+  The field of political data science is incredibly relevant right now, as our country heads into another presidential election. This analysis is aimed at assessing which factors can lead to acruing democratic votes for the 2020 election. Candidates in the 2020 election could potentially use the results from this research to plan campaigns, marketing, and messaging.
+  
+  The goal is to analyze voting data from the 2016 presidential election that is joined with county-level population data, in hopes of determining the most effective predictors of any given county's vote. We will be collectively analyzing predictors involving education (preschool enrollment, education level), socioeconomic factors (employment, poverty level), and racial breakdown to make inferences about the outcomes of the election, specifically the democratic turnout. 
+
+## Data Validation
+
+```{r message=FALSE, warning=FALSE}
+library(readr)
+county_data = read_csv("usa-2016-presidential-election-by-county.csv")
+```
+
+```{r}
+head(county_data$`Democrats 2016`)
+```
+
+## Methods
+
+### Socioeconomic Predictors
+
+  Following the 2016 Presidential election, there was a lot of speculation about the role that socioeconomic factors played in the election of Donald Trump. In this collected data, there are several key predictors available. 
+  
+  - Median earnings
+  - Percent of individuals over 65 that are below the poverty line
+  - Percent of children that are below the poverty line
+  - Percent of population (in county) below the poverty line
+  - Percent of population in various industries, including management, service, sales, farming, construction, and production/transportation.
+  
+  We will also look at some demographic data such as age, race (whether or not the county is majority white or non-white voters), population density, and location data later on to help improve our model.
+  
+  For simplicity, we will extract the socioeconomic factors and rename them.
+  
+```{r, echo = FALSE}
+socio = data.frame(county_data$State, county_data$County, county_data$`Total Population`, county_data$`Democrats 2016`, county_data$White, county_data$`Median Earnings 2010`, county_data$`Median Age`, county_data$`Children Under 6 Living in Poverty`, county_data$`Adults 65 and Older Living in Poverty`, county_data$Poverty.Rate.below.federal.poverty.threshold, county_data$Management.professional.and.related.occupations, county_data$Service.occupations, county_data$Sales.and.office.occupations, county_data$Farming.fishing.and.forestry.occupations, county_data$Construction.extraction.maintenance.and.repair.occupations, county_data$Production.transportation.and.material.moving.occupations, county_data$`At Least Bachelors's Degree`)
+colnames(socio) = c("state","county", "pop", "dem", "white", "earnings", "age", "children_in_pov", "seniors_in_pov", "pov", "management", "service", "sales", "farming", "construction", "production", "bach")
+```
+  
+  We start by evaluating all values and their interactions in an attempt to extract an effective model. This is done using AIC 2-way selection. 
+  
+
+```{r, cache=TRUE}
+socio_null = lm(dem ~ 1, data = socio)
+socio_all = lm(dem ~ earnings * children_in_pov * seniors_in_pov * pov * management * service * sales * farming * construction * production, data = socio)
+socio_model = step(socio_null, scope = list(lower = socio_null, upper = socio_all), direction = "both", trace = FALSE)
+```
+
+```{r}
+extractAIC(socio_model)
+summary(socio_model)$r.squared
+qqnorm(resid(socio_model))
+qqline(resid(socio_model), col="dodgerblue")
+
+```
+
+  At first glance, this appears to be a high AIC, and an "okay" $R^2$. We can explain roughly 50% of the variance in the democratic vote using this model. However it appears that the normality assumption, based on the QQ plot, is highly suspect. We can make some improvements to the model. 
+  
+  One hypothesis worth testing is whether race plays any role in the value of the socioeconomic predictors. To test this, we added a dummy variable `is_white` to represent whether or not a given county is majority white voters or non-white voters. 
+  
+```{r}
+socio$is_white = ifelse(socio$white > 50, 1, 0)
+```
+  
+  We can add this to our model selection and see if we can compute a more specific model. We then similarly evaluated this model's effectiveness.
+
+```{r, echo=FALSE, cache=TRUE}
+socio_null = lm(dem ~ 1, data = socio)
+socio_all = lm(dem ~ earnings * children_in_pov * seniors_in_pov * pov * management * service * sales * farming * construction * production * is_white, data = socio)
+socio_model_race = step(socio_null, scope = list(lower = socio_null, upper = socio_all), direction = "both", trace = FALSE)
+```
+
+  
+```{r}
+summary(socio_model_race)$r.squared
+```
+  
+  A much higher $R^2$ indicates that the impact of race on socioeconomic predictors is significant in creating a model for predicting democratic results. This can be verified by comparing the models with an ANOVA test.
+  
+```{r}
+anova(socio_model, socio_model_race)[,"Pr(>F)"]
+```
+  
+  This confirms that whether or not a county is majority non-white is massively significant when making voting predictions based on socioeconomic factors. 
+  
+### Removing Outliers
+
+  One further improvement to this model may be removing potentially influential points. We will do this by removing data points from the our data with a high Cook's Distance. 
+  
+```{r}
+socio_clean = socio[-which(cooks.distance(socio_model_race) > 4 / length(socio$pop)),]
+```
+  
+```{r, echo=FALSE}
+socio_clean$is_white = ifelse(socio_clean$white > 50, 1, 0)
+socio_clean_model = lm(dem ~ is_white + construction + farming + production + 
+    pov + earnings + service + children_in_pov + seniors_in_pov + 
+    sales + construction:farming + farming:production + earnings:service + 
+    is_white:pov + farming:service + farming:earnings + production:children_in_pov + 
+    is_white:seniors_in_pov + production:seniors_in_pov + production:pov + 
+    is_white:construction + construction:seniors_in_pov + construction:pov + 
+    is_white:service + pov:service + construction:earnings + 
+    is_white:production + children_in_pov:seniors_in_pov + is_white:sales + 
+    service:sales + construction:sales + farming:seniors_in_pov + 
+    seniors_in_pov:sales + construction:children_in_pov + children_in_pov:sales + 
+    farming:pov + farming:sales + is_white:earnings + is_white:construction:pov + 
+    is_white:production:pov + is_white:production:seniors_in_pov + 
+    construction:children_in_pov:seniors_in_pov + construction:children_in_pov:sales + 
+    farming:pov:service + construction:farming:pov + is_white:earnings:service + 
+    construction:farming:sales + farming:seniors_in_pov:sales + 
+    is_white:construction:earnings + is_white:seniors_in_pov:sales, data = socio_clean)
+```
+  
+```{r}
+summary(socio_clean_model)$r.squared
+```
+  
+  We improved the $R^2$ by only 0.004, but this cleaner model may allow for more accurate predictions moving forward.
+
+### Education 
+
+  Before continuing with developing an all-encompassing model, we next focused solely on education levels as the predictors for democratic votes. 
+
+  When looking at how education affected the 2016 Democratic election there are three predictors that look interesting to analyze. Those that have a bachelor's degree, a high school degree, and parents who have children enrolled in pre-school (ages 3-4). The bachelor's degree and high school degree may have colinearity issues considering those that have a bachelor's degree will generally have a high school degree so we may choose to look at just the bachelor's degree in our final model after some validation. The pre-school enrollment will be interesting as well to look at to see how a voluntary education enrollment for children affects the response. 
+  
+  Before we begin analyzing the predictors, we will look at the datatype and structure of the three predictors.
+  
+```{r}
+head(county_data$`At Least Bachelors's Degree`)
+head(county_data$`At Least High School Diploma`)
+head(county_data$Preschool.Enrollment.Ratio.enrolled.ages.3.and.4)
+```
+  
+  For each of the predictors, we see they are ratios out of 100 percent so each is a numeric datatype rounded to nearest tenths. 
+  
+  First, we will look to find a good model to fit to our Democratic votes that we saw in 2016 and validate that model. We look at the additive model first. Then, we use backwards variable selection to find a model with with the lowest AIC and the better fit.
+  
+```{r include=FALSE}
+education_lm = lm(`Democrats 2016` ~ `At Least Bachelors's Degree` + `At Least High School Diploma` + Preschool.Enrollment.Ratio.enrolled.ages.3.and.4,data = county_data)
+education_back_lm = step(education_lm, direction = "backward")
+```
+
+```{r}
+extractAIC(education_back_lm)
+summary(education_back_lm)$adj.r.squared
+```
+
+
+So, the additive model with all three variables seems to have a high AIC. It also has a low adjusted r-squared suggesting that our model might not be the best fit. Let's look at a model with all two-way interactions.
+
+```{r include=FALSE}
+education_lm_all = lm(`Democrats 2016` ~ `At Least Bachelors's Degree` * `At Least High School Diploma` * Preschool.Enrollment.Ratio.enrolled.ages.3.and.4,data = county_data)
+education_back_lm_all = step(education_lm_all, direction = "backward")
+```
+
+```{r}
+extractAIC(education_back_lm_all)
+summary(education_back_lm_all)$adj.r.squared
+```
+
+The interaction model seems to have a slightly better AIC so it might be a better fit and has a slightly better adjusted r-squared. This could suggest a slightly more significant relationship with the interaction model as compared to the additive.
+
+We will do an anova test of the two models to see which one is more significant:
+
+```{r}
+anova(education_back_lm, education_back_lm_all)
+```
+
+With a very low p-value, we would prefer to reject the null hypothesis and say that the interaction model is more signficant in terms of linear regression.
+
+Before we move on, we will also do some model validation to ensure our interaction model meets certain criteria.
+
+```{r}
+par(mfrow = c(1,2))
+plot(fitted(education_back_lm_all), resid(education_back_lm_all), xlab = "Fitted", ylab = "Residuals", main = "Fitted vs. Residuals")
+abline(h=0)
+qqnorm(resid(education_back_lm_all))
+qqline(resid(education_back_lm_all))
+```
+
+```{r}
+shapiro.test(resid(education_back_lm_all))
+```
+
+With a small p-value for the shapiro-wilk normality test we say there is a small probability the data could have been sampled from a normal distribution. Our q-q plots show some tails on our line and the fitted vs. residuals plot seem to be centered around 0 and have a constant variance.
+
+Checking collinearity with our model will also ensure our three variables are not highly correlated:
+```{r}
+myvars <- c("At Least Bachelors's Degree", "At Least High School Diploma", "Preschool.Enrollment.Ratio.enrolled.ages.3.and.4")
+newdata <- county_data[myvars]
+pairs(newdata, col = "dodgerblue")
+```
+
+  From the pair of graphs corresponding to each variable, we see that there is no high colinearity, however for the bachelor's and high school diploma it does show some which is likely due to the fact that those with bachelor's degrees will also have high school diplomas.
+
+  After looking over the model and validating some of its properties, we believe this model won't be the best for predicting based on the low significance of regression and some of the questionable values for the model validation with the q-q plot and collinearity. However, using these predictors in a model combined with other significant predictors could show some more interesting and significant results. 
+
+  Due to the fact that we can see collinearity between Bachelor's Degrees and High School / Preschool levels, we will use the Bachelor's degree predictor moving forward in combination with other factors. 
+
+
+### Socioeconomic + Education + Race Analysis
+
+  To combine socioeconomic, education, and race factors, we will bring back the full model derived in the `Socioeconomic` section, and add the level of Bachelor's degrees as a predictor. We will strip it of interactions so that we can first analyze levels of collinearity to minimize the number of predictors at play. 
+  
+```{r}
+library(car)
+add_model = lm(dem ~ construction + farming + production + 
+    pov + earnings + service + children_in_pov + seniors_in_pov + 
+    sales + bach, data = socio_clean)
+car::vif(add_model)
+```
+  
+  At first glance, it appears that `pov` (poverty level) has the highest collinearity, but we suspect this may be due to high collinearity with the levels of children and seniors in poverty. We can prove this by removing those predictors and testing again. 
+  
+```{r}
+add_model = lm(dem ~ construction + farming + production + 
+    pov + earnings + service + sales + bach, data = socio_clean)
+car::vif(add_model)
+```
+  
+  We will now generate an interactive model, adding back in the effect of race.
+  
+```{r, cache=TRUE}
+socio_null = lm(dem ~ 1, data = socio_clean)
+socio_all = lm(dem ~ earnings * pov * management * service * sales * farming * construction * production * is_white * bach, data = socio_clean)
+socio_full = step(socio_null, scope = list(lower = socio_null, upper = socio_all), direction = "both", trace = FALSE)
+```
+  
+```{r}
+summary(socio_full)
+```
+  
+  As we can see from the improved $R^2$ value of $0.668$, adding the education predictor (Bachlor's degrees) and trimming the collinear predictors helped to improve this model. 
+  
+### Location
+
+  We will further explore improving the model by adding a factor variable to account for regions.
+  
+  - West: California, Nevada, Utah, Colorado, Wyoming, Montana, Idaho, Washington, Oregon, Alaska, Hawaii
+  - Southwest: Texas, New Mexico, Arizona, Oklahoma
+  - Southeast: Arkansas, Louisiana, Georgia, Mississippi, Alabama, Florida, South Carolina, North Carolina, Tennessee, Kentucky, Virginia, West Virginia
+  - Northeast: Maryland, Rhode Island, Pennsylvania, New York, Vermont, Massachussetts, New Jersey, Delaware, Maine, Connecticut 
+  - Midwest: Ohio, Indiana, Michigan, Illinois, Missouri, Kansas, Nebraska, South Dakota, North Dakota, Minnesota, Iowa, Wisconsin
+  
+```{r}
+socio_clean$region = ifelse(socio_clean$state %in% c("California", "Nevada", "Utah", "Colorado", "Wyoming", "Montana", "Idaho", "Washington", "Oregon", "Alaska", "Hawaii"), "west", NA)
+socio_clean$region = ifelse(is.na(socio_clean$region) & socio_clean$state %in% c("Texas", "New Mexico", "Arizona", "Oklahoma"), "southwest", socio_clean$region)
+socio_clean$region = ifelse(is.na(socio_clean$region) & socio_clean$state %in% c("Arkansas", "Louisiana", "Georgia", "Mississippi", "Alabama", "Florida", "South Carolina", "North Carolina", "Tennessee", "Kentucky", "Virginia", "West Virginia"), "southeast", socio_clean$region)
+socio_clean$region = ifelse(is.na(socio_clean$region) & socio_clean$state %in% c("Maryland", "Rhode Island", "Pennsylvania", "New York", "Vermont", "Massachussetts", "New Jersey", "Delaware", "Maine", "Connecticut"), "northeast", socio_clean$region)
+socio_clean$region = ifelse(is.na(socio_clean$region) & socio_clean$state %in% c("Ohio", "Indiana", "Michigan", "Illinois", "Missouri", "Kansas", "Nebraska", "South Dakota", "North Dakota", "Minnesota", "Iowa", "Wisconsin"), "midwest", socio_clean$region)
+
+```
+  
+
+  To keep the model simpler, we will now derive a model using earnings, poverty levels, Bachelor's degrees, region, and white vs. non-white counties. 
+  
+```{r, cache = TRUE}
+# remove NA values
+socio_clean = na.omit(socio_clean)
+null_all = lm(dem ~ 1, data = socio_clean)
+full_all = lm(dem ~ earnings * pov * bach * is_white * region, data = socio_clean)
+full_model = step(null_all, scope = list(lower = null_all, upper = full_all), direction = "both", trace = FALSE)
+summary(full_model)
+```
+
+  Despite this $R^2$ being slightly lower (at $0.643$) than the model without region factors, this model is much smaller in its actual numeric predictors, so we see that adding factors for region and race are highly effective in improving the model. 
+  
+  
+
+## Results
+
+  Given this information, and given that we want a model that is simple to digest and make inferences from, we will move forward with a more simple model, using only `poverty`, as it has the lowest p-value of the three numeric predictors above, and the factor variables for region, and race. 
+  
+```{r}
+pov_model = lm(dem ~ pov * is_white * region, data = socio_clean)
+```
+  
+  Though its p-value may be lower, we posit that it will be simpler to explain and make more concise inferences when plotted by region and race. 
+  
+  To visualize this model, we will plot earnings vs. democratic votes. We will make separate plots for each region, and highlight the racial disparities within each plot. 
+
+```{r, echo=FALSE}
+midwest = socio_clean[which(socio_clean$region == "midwest"),]
+west = socio_clean[which(socio_clean$region == "west"),]
+southwest = socio_clean[which(socio_clean$region == "southwest"),]
+southeast = socio_clean[which(socio_clean$region == "southeast"),]
+northeast = socio_clean[which(socio_clean$region == "northeast"),]
+```
+
+### Midwest
+
+```{r, echo=FALSE}
+plot(midwest$pov, midwest$dem, col=(midwest$is_white + 2) * 2, xlab = "% Below Poverty Line", ylab = "% Democratic Votes", main = "Midwest Poverty vs. Democratic Votes")
+abline(a=coef(pov_model)["(Intercept)"], b=coef(pov_model)["pov"], col=4)
+abline(a=(coef(pov_model)["(Intercept)"] + coef(pov_model)["is_white"]), b=(coef(pov_model)["pov"] + coef(pov_model)["pov:is_white"]), col=6)
+legend("topright", c("White", "Non-white"),
+       col= c(6,4), lty = 1)
+```
+
+```{r}
+midwest_lm = lm(dem ~ pov * is_white, data = midwest)
+summary(midwest_lm)$r.squared
+shapiro.test(resid(midwest_lm))
+```
+
+
+### Southwest
+
+```{r, echo=FALSE}
+plot(southwest$pov, southwest$dem, col=(southwest$is_white + 2) * 2, xlab = "% Below Poverty Line", ylab = "% Democratic Votes", main = "Southwest Poverty vs. Democratic Votes")
+abline(a=coef(pov_model)["(Intercept)"] + coef(pov_model)["regionsouthwest"], b=coef(pov_model)["pov"] + coef(pov_model)["pov:regionsouthwest"], col=4)
+abline(a=(coef(pov_model)["(Intercept)"] + coef(pov_model)["regionsouthwest"] + coef(pov_model)["is_white"]) + coef(pov_model)["is_white:regionsouthwest"], b=(coef(pov_model)["pov"] + coef(pov_model)["pov:is_white:regionsouthwest"]+ coef(pov_model)["pov:is_white"] + coef(pov_model)["pov:regionsouthwest"]), col=6)
+legend("topright", c("White", "Non-white"),
+       col= c(6,4), lty = 1)
+```
+
+```{r}
+southwest_lm = lm(dem ~ pov * is_white, data = southwest)
+summary(southwest_lm)$r.squared
+shapiro.test(resid(southwest_lm))
+```
+
+### Southeast
+
+```{r, echo=FALSE}
+plot(southeast$pov, southeast$dem, col=(southeast$is_white + 2) * 2, xlab = "% Below Poverty Line", ylab = "% Democratic Votes", main = "Southeast Poverty vs. Democratic Votes")
+abline(a=coef(pov_model)["(Intercept)"] + coef(pov_model)["regionsoutheast"], b=coef(pov_model)["pov"] + coef(pov_model)["pov:regionsoutheast"], col=4)
+abline(a=(coef(pov_model)["(Intercept)"] + coef(pov_model)["regionsoutheast"] + coef(pov_model)["is_white"]) + coef(pov_model)["is_white:regionsoutheast"], b=(coef(pov_model)["pov"] + coef(pov_model)["pov:is_white:regionsoutheast"]+ coef(pov_model)["pov:is_white"] + coef(pov_model)["pov:regionsoutheast"]), col=6)
+legend("topright", c("White", "Non-white"),
+       col= c(6,4), lty = 1)
+```
+
+```{r}
+southeast_lm = lm(dem ~ pov * is_white, data = southeast)
+summary(southeast_lm)$r.squared
+shapiro.test(resid(southeast_lm))
+```
+
+### Northeast
+
+```{r, echo=FALSE}
+plot(northeast$pov, northeast$dem, col=(northeast$is_white + 2) * 2, xlab = "% Below Poverty Line", ylab = "% Democratic Votes", main = "Northeast Poverty vs. Democratic Votes")
+abline(a=coef(pov_model)["(Intercept)"] + coef(pov_model)["regionnortheast"], b=coef(pov_model)["pov"] + coef(pov_model)["pov:regionnortheast"], col=4)
+abline(a=(coef(pov_model)["(Intercept)"] + coef(pov_model)["regionnortheast"] + coef(pov_model)["is_white"]) + coef(pov_model)["is_white:regionnortheast"], b=(coef(pov_model)["pov"] + coef(pov_model)["pov:is_white:regionnortheast"]+ coef(pov_model)["pov:is_white"] + coef(pov_model)["pov:regionnortheast"]), col=6)
+legend("topright", c("White", "Non-white"),
+       col= c(6,4), lty = 1)
+```
+
+```{r}
+northeast_lm = lm(dem ~ pov * is_white, data = northeast)
+summary(northeast_lm)$r.squared
+shapiro.test(resid(northeast_lm))
+```
+
+### West 
+
+```{r, echo=FALSE}
+plot(west$pov, west$dem, col=(west$is_white + 2) * 2, xlab = "% Below Poverty Line", ylab = "% Democratic Votes", main = "West Poverty vs. Democratic Votes")
+abline(a=coef(pov_model)["(Intercept)"] + coef(pov_model)["regionwest"], b=coef(pov_model)["pov"] + coef(pov_model)["pov:regionwest"], col=4)
+abline(a=(coef(pov_model)["(Intercept)"] + coef(pov_model)["regionwest"] + coef(pov_model)["is_white"]) + coef(pov_model)["is_white:regionwest"], b=(coef(pov_model)["pov"] + coef(pov_model)["pov:is_white:regionwest"]+ coef(pov_model)["pov:is_white"] + coef(pov_model)["pov:regionwest"]), col=6)
+legend("topright", c("White", "Non-white"),
+       col= c(6,4), lty = 1)
+```
+
+```{r}
+west_lm = lm(dem ~ pov * is_white, data = west)
+summary(west_lm)$r.squared
+shapiro.test(resid(west_lm))
+```
+
+## Discussion
+
+  The goal of this project was to analyze the data from the 2016 election, in the context of socioeconomic, education, and racial data, to develop effective models in predicting the Democratic voter turnout. The election was very complicated, as there was no one single predictor that was useful on its own. It ended up requiring interactions of factors such as race and location to derive useful and interpretable models. 
+  
+  The initial instinct was to analyze all possible predictors and their interactions, but these models grew rapidly in complexity and became increasingly difficult to interpret. As one might expect, they also contained high levels of collinearity, as things like poverty levels, preschool enrollment, and median earnings all tend to go hand in hand. Landing on a concise model involved examining collinearity, removing variables, examining and removing outliers, adding and removing factors, and dividing data into geographical regions. 
+  
+  In the end we have landed on two key findings. One is a complex model that incorporates multiple interactions between socioeconomic variables such as median earnings, poverty levels, and the percentage of citizens possessing bachelor’s degrees, as well as predictors accounting for the interactions of poverty levels and race, earnings and region, etc. This model is complex in its number of predictors and interpretability, but it had a relatively high $R^2$ and may be useful for predictions. 
+
+  For our main results, we have decided to narrow the focus on the most significant predictor from the above derived model, being the percentage of citizens in a given county living below the poverty line. This predictor was combined with a dummy variable accounting for white vs. non-white population, as well as factor variables for each region of the country. Though this overall model had a lower $R^2$, upon breaking it down by location we found that it produced some very interesting regressions.
+
+  For all regions but one (the “West”) region, it was found that for non-white voters, as poverty levels increased, the percentage of democratic votes increased. The opposite was true in most regions for white voters: as poverty levels increased for white voters, the percentage of democratic votes decreased. 
+
+  In terms of the quality of these regional models, the effectiveness was highly variable depending on the region. In terms of the $R^2$ values, the two regions with the "cleanest" models were the Southeast and Southwest regions. Demographically, this makes sense when considering voters, as the Southeast region contains the highly-polarized deep south states such as Alabama and Mississippi. The region with the most variation from its model was the Midwest. Thinking back on the last election, the midwest contained the highly contested battleground states of Ohio, Michigan, and Wisconsin, which ultimately determined the election. Part of why the outcomes in these states were so shocking was that, as we have seen here, there is not a clear way to predict the voting patterns of white voters in the Midwest. 
+
+  Overall, this was really an insight into why planning compaigns and predicting elections is so difficult. Although there are so factors that have higher influence than others when predicting democratic turnout, there is a massive amount of variability that can be largely unknown. While it was possible for us to derive a more precise model with many interactions, this model was highly complex and would be difficult for most campaigns to properly interpret. 
+
+  A further direction for this analysis would be to use the predictors chosen and generate a model based on the Democratic turnout in the 2012 election, use this as training data to be tested on the 2016 data. This likely would have shown a high level of variance between the predicted values and the outcomes, as the 2016 election had many results that were very unexpected.
+
+
+## Appendix
+
+  The dataset that was used throughout was found at https://public.opendatasoft.com/explore/dataset/usa-2016-presidential-election-by-county/table/?disjunctive.state
+
+  The data is a combination of two data sources: 
+
+  1. The first data source is from the New York Times and shows the 2016 American election results by party and county (https://www.nytimes.com/elections/2016/results/president).
+
+  2. The second data source is a collection of socioeconomic, demographic and geographic data for US counties in 2016 and comes from a research paper about inequality across these counties (https://openpsych.net/paper/12).
+
+  Both data sources were combined in order to see how these demographics may have affected the 2016 election results. 
